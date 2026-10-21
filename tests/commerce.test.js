@@ -13,10 +13,10 @@ test('pricing ignores a client total and applies threshold shipping', () => {
     settings: { freeDeliveryThreshold: 999, deliveryCharge: 79, taxPercent: 5 },
     couponDiscount: 50,
   });
-  assert.equal(priced.shippingCharge, 79);
+  assert.equal(priced.shippingCharge, 40);
   assert.equal(priced.taxAmount, 25);
   assert.equal(priced.couponDiscount, 50);
-  assert.equal(priced.totalAmount, 554);
+  assert.equal(priced.totalAmount, 515);
 });
 
 test('free delivery starts at the configured threshold', () => {

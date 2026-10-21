@@ -8,6 +8,7 @@ const Newsletter = require('../models/Newsletter');
 const Category = require('../models/Category');
 const { asyncHandler, createError } = require('../utils/errorUtils');
 const logAudit = require('../utils/auditLog');
+const { FIXED_DELIVERY_FEE } = require('../services/commerce');
 
 const platformOverview = asyncHandler(async (req, res) => {
   const [gross, payments, orderCount, activeNurseries, pendingSellers, refunds, recent] = await Promise.all([
@@ -159,7 +160,9 @@ const updateSettings = asyncHandler(async (req, res) => {
   const settings = await PlatformSettings.getSettings();
   const fields = [
     'commissionPercent', 'deliveryCharge', 'freeDeliveryThreshold', 'taxPercent',
-    'serviceablePins', 'allowUnlistedPins', 'announcement', 'supportEmail', 'supportPhone',
+    'communityCommissionPercent', 'communityLocalDeliveryFee', 'communityReturnWindowHours',
+    'payoutPolicy', 'serviceablePins', 'allowUnlistedPins', 'announcement', 'supportEmail', 'supportPhone',
+    'plantListingExpiryDays', 'plantRequestExpiryHours', 'plantMaxActiveListings', 'plantRequireModeration',
     'returnPolicy', 'cancellationPolicy', 'settlementNote', 'demoMode',
   ];
   fields.forEach((field) => {
@@ -168,6 +171,7 @@ const updateSettings = asyncHandler(async (req, res) => {
   if (typeof settings.serviceablePins === 'string') {
     settings.serviceablePins = settings.serviceablePins.split(/[\s,]+/).filter((pin) => /^\d{6}$/.test(pin));
   }
+  settings.deliveryCharge = FIXED_DELIVERY_FEE;
   await settings.save();
   await logAudit({ action: 'settings.update', performedBy: req.user._id, targetId: settings._id, targetModel: 'PlatformSettings', req });
   res.json({ success: true, settings });
@@ -184,7 +188,7 @@ const publicSettings = asyncHandler(async (req, res) => {
       returnPolicy: settings.returnPolicy,
       cancellationPolicy: settings.cancellationPolicy,
       freeDeliveryThreshold: settings.freeDeliveryThreshold,
-      deliveryCharge: settings.deliveryCharge,
+      deliveryCharge: FIXED_DELIVERY_FEE,
       demoMode: settings.demoMode,
       settlementNote: settings.settlementNote,
     },

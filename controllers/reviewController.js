@@ -1,6 +1,21 @@
 const Review = require('../models/Review');
 const Order = require('../models/Order');
+const Product = require('../models/Product');
+const CommunitySeller = require('../models/CommunitySeller');
 const { asyncHandler, createError } = require('../utils/errorUtils');
+
+async function refreshSellerRating(sellerId) {
+  if (!sellerId) return;
+  const productIds = await Product.find({ communitySeller: sellerId }).distinct('_id');
+  const stats = await Review.aggregate([
+    { $match: { product: { $in: productIds }, isApproved: true } },
+    { $group: { _id: null, avg: { $avg: '$rating' }, count: { $sum: 1 } } },
+  ]);
+  await CommunitySeller.findByIdAndUpdate(sellerId, {
+    'ratings.average': stats[0] ? Math.round(stats[0].avg * 10) / 10 : 0,
+    'ratings.count': stats[0]?.count || 0,
+  });
+}
 
 // @desc    Get product reviews
 // @route   GET /api/reviews/:productId
@@ -26,26 +41,37 @@ const addReview = asyncHandler(async (req, res, next) => {
   const { rating, title, comment } = req.body;
   const productId = req.params.productId;
 
+  const product = await Product.findById(productId).populate('nursery', 'owner').populate('communitySeller', 'user');
+  if (!product) return next(createError(404, 'Product not found.'));
+  if (product.communitySeller && String(product.communitySeller.user) === String(req.user._id)) {
+    return next(createError(403, 'Sellers cannot review their own plants.'));
+  }
+  if (product.nursery && String(product.nursery.owner) === String(req.user._id)) {
+    return next(createError(403, 'Sellers cannot review their own plants.'));
+  }
+
   const existing = await Review.findOne({ product: productId, user: req.user._id });
   if (existing) return next(createError(409, 'You have already reviewed this product.'));
 
-  // Check verified purchase
   const order = await Order.findOne({
     user: req.user._id,
     'items.product': productId,
-    paymentStatus: 'paid',
+    paymentStatus: { $in: ['paid', 'partially_refunded'] },
+    orderStatus: { $in: ['confirmed', 'processing', 'shipped', 'delivered'] },
   });
+  if (!order) return next(createError(403, 'Only verified purchasers can review a plant.'));
 
   const review = await Review.create({
     product: productId,
     user: req.user._id,
-    order: order?._id,
+    order: order._id,
     rating,
     title,
     comment,
-    isVerifiedPurchase: !!order,
+    isVerifiedPurchase: true,
   });
 
+  await refreshSellerRating(product.communitySeller?._id);
   const populated = await review.populate('user', 'name avatar');
   res.status(201).json({ success: true, review: populated });
 });

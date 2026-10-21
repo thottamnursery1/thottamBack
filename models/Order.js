@@ -15,6 +15,11 @@ const orderItemSchema = new mongoose.Schema({
   nursery: { type: mongoose.Schema.Types.ObjectId, ref: 'Nursery' },
   shopId: { type: mongoose.Schema.Types.ObjectId, ref: 'Nursery' },
   nurseryName: String,
+  listingSource: { type: String, enum: ['nursery', 'community'], default: 'nursery' },
+  communitySeller: { type: mongoose.Schema.Types.ObjectId, ref: 'CommunitySeller' },
+  sellerName: String,
+  sellerKind: { type: String, enum: ['nursery', 'community'], default: 'nursery' },
+  deliveryMethod: { type: String, enum: ['pickup', 'local_delivery', 'courier', ''], default: '' },
 }, { _id: true });
 
 const shippingAddressSchema = new mongoose.Schema({
@@ -40,7 +45,10 @@ const orderSchema = new mongoose.Schema({
     taxPercent: { type: Number, default: 0 },
     couponDiscount: { type: Number, default: 0 },
     couponCode: String,
+    packagingFee: { type: Number, default: 0 },
     totalAmount: { type: Number, required: true }, // Final amount charged
+    communityDelivery: { type: Number, default: 0 },
+    platformShipping: { type: Number, default: 0 },
   },
   paymentMethod: {
     type: String,
@@ -88,6 +96,15 @@ const orderSchema = new mongoose.Schema({
     commissionPercent: Number,
     commissionAmount: Number,
     sellerAmount: Number,
+    sellerKind: { type: String, enum: ['nursery', 'community'], default: 'nursery' },
+    communitySeller: { type: mongoose.Schema.Types.ObjectId, ref: 'CommunitySeller' },
+    sellerName: String,
+    deliveryFee: { type: Number, default: 0 },
+    deliveryAllocation: { type: Number, default: 0 },
+    deliveryMethod: { type: String, enum: ['pickup', 'local_delivery', 'courier', ''], default: '' },
+    sellerProductProceeds: Number,
+    dispatchPrepHours: { type: Number, default: 0 },
+    fulfilledAt: Date,
     fulfillmentStatus: {
       type: String,
       enum: ['pending', 'processing', 'dispatched', 'delivered', 'cancelled'],
@@ -101,6 +118,8 @@ const orderSchema = new mongoose.Schema({
     trackingNumber: String,
   }],
   inventoryIssue: { type: Boolean, default: false },
+  inventoryReserved: { type: Boolean, default: false },
+  inventoryCommitted: { type: Boolean, default: false },
 }, { timestamps: true });
 
 // Auto-generate order number
@@ -118,5 +137,6 @@ orderSchema.index({ razorpayOrderId: 1 });
 orderSchema.index({ orderStatus: 1 });
 orderSchema.index({ paymentStatus: 1 });
 orderSchema.index({ 'sellerGroups.nursery': 1, createdAt: -1 });
+orderSchema.index({ 'sellerGroups.communitySeller': 1, createdAt: -1 });
 
 module.exports = mongoose.model('Order', orderSchema);

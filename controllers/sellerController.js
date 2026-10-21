@@ -1,6 +1,7 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const Order = require('../models/Order');
+const InventoryLog = require('../models/InventoryLog');
 const { asyncHandler, createError } = require('../utils/errorUtils');
 const logAudit = require('../utils/auditLog');
 const { ownedFilter } = require('../services/listingStatus');
@@ -271,7 +272,64 @@ const updateFulfillment = asyncHandler(async (req, res, next) => {
   res.json({ success: true, order: scopeOrder(order, req.nursery._id) });
 });
 
+const inventory = asyncHandler(async (req, res) => {
+  const { page = 1, limit = 20, lowStock } = req.query;
+  const filter = { ...ownedFilter(req.nursery._id) };
+  if (lowStock === 'true') filter.$expr = { $lte: ['$stock', '$lowStockThreshold'] };
+
+  const skip = (Number(page) - 1) * Number(limit);
+  const [products, total] = await Promise.all([
+    Product.find(filter)
+      .populate('category', 'name')
+      .select('name sku stock lowStockThreshold price images category')
+      .sort({ stock: 1, name: 1 })
+      .skip(skip)
+      .limit(Number(limit)),
+    Product.countDocuments(filter),
+  ]);
+
+  res.json({
+    success: true,
+    products,
+    pagination: { total, page: Number(page), pages: Math.ceil(total / Number(limit)) || 1 },
+  });
+});
+
+const adjustInventory = asyncHandler(async (req, res, next) => {
+  const quantity = Number(req.body.quantity);
+  const reason = String(req.body.reason || '').trim();
+  if (!Number.isFinite(quantity) || quantity === 0) return next(createError(400, 'Enter a quantity to add or remove.'));
+  if (!reason) return next(createError(400, 'A reason is required.'));
+
+  const product = await Product.findOne({ _id: req.body.productId, ...ownedFilter(req.nursery._id) });
+  if (!product) return next(createError(404, 'This product is not in your shop.'));
+
+  const stockBefore = product.stock;
+  product.stock = Math.max(0, product.stock + quantity);
+  await product.save();
+
+  await InventoryLog.create({
+    product: product._id,
+    changeType: 'adjustment',
+    quantityChange: quantity,
+    stockBefore,
+    stockAfter: product.stock,
+    notes: reason,
+    performedBy: req.user._id,
+  });
+  await logAudit({
+    action: 'inventory.adjustment',
+    performedBy: req.user._id,
+    targetId: product._id,
+    targetModel: 'Product',
+    details: { quantity, reason, stockBefore, stockAfter: product.stock },
+    req,
+  });
+
+  res.json({ success: true, message: 'Inventory adjusted.', product });
+});
+
 module.exports = {
   dashboard, listProducts, createProduct, updateProduct, deleteProduct, getProduct, updateProfile,
-  listOrders, getOrder, updateFulfillment,
+  listOrders, getOrder, updateFulfillment, inventory, adjustInventory,
 };

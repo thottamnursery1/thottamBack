@@ -2,12 +2,14 @@ const crypto = require('crypto');
 
 const DEFAULT_SETTINGS = {
   commissionPercent: 10,
-  deliveryCharge: 79,
+  deliveryCharge: 40,
   freeDeliveryThreshold: 999,
   taxPercent: 0,
   serviceablePins: [],
   allowUnlistedPins: true,
 };
+
+const FIXED_DELIVERY_FEE = 40;
 
 function verifyPaymentSignature({ orderId, paymentId, signature, secret }) {
   if (!orderId || !paymentId || !signature || !secret) return false;
@@ -33,9 +35,8 @@ function verifyWebhookSignature(rawBody, signature, secret) {
 function calculateOrderPricing({ subtotal, settings = DEFAULT_SETTINGS, couponDiscount = 0 }) {
   const safeSubtotal = Math.max(0, Number(subtotal) || 0);
   const threshold = Number(settings.freeDeliveryThreshold) || 0;
-  const deliveryCharge = Number(settings.deliveryCharge) || 0;
   const taxPercent = Number(settings.taxPercent) || 0;
-  const shippingCharge = safeSubtotal >= threshold ? 0 : deliveryCharge;
+  const shippingCharge = safeSubtotal >= threshold ? 0 : FIXED_DELIVERY_FEE;
   const taxAmount = Math.round((safeSubtotal * taxPercent) / 100);
   const discount = Math.min(Math.max(0, Number(couponDiscount) || 0), safeSubtotal);
   const totalAmount = Math.max(0, safeSubtotal + shippingCharge + taxAmount - discount);
@@ -49,16 +50,45 @@ function calculateOrderPricing({ subtotal, settings = DEFAULT_SETTINGS, couponDi
   };
 }
 
-function buildSellerGroups(orderItems, commissionPercent = 0) {
+function sellerGroupKey(item) {
+  if (item.communitySeller) return `community:${item.communitySeller}`;
+  if (item.nursery) return `nursery:${item.nursery}`;
+  return 'platform';
+}
+
+function settleGroupAmounts(group, commissionPercent) {
+  const productSubtotal = Math.max(0, Number(group.subtotal) || 0);
+  const percent = Number(commissionPercent) || 0;
+  const commissionAmount = Math.round((productSubtotal * percent) / 100);
+  const deliveryAllocation = Math.max(0, Number(group.deliveryFee ?? group.deliveryAllocation) || 0);
+  const sellerProductProceeds = productSubtotal - commissionAmount;
+  return {
+    commissionPercent: percent,
+    commissionAmount,
+    deliveryAllocation,
+    sellerProductProceeds,
+    sellerAmount: sellerProductProceeds + deliveryAllocation,
+  };
+}
+
+function buildSellerGroups(orderItems, commissionPercent = 0, options = {}) {
+  const communityPercent = options.communityCommissionPercent ?? commissionPercent;
   const groups = new Map();
   for (const item of orderItems) {
-    const key = item.nursery ? String(item.nursery) : 'platform';
+    const key = sellerGroupKey(item);
     if (!groups.has(key)) {
+      const isCommunity = Boolean(item.communitySeller);
       groups.set(key, {
-        nursery: item.nursery || undefined,
-        nurseryName: item.nurseryName || 'Root & Bloom',
+        nursery: isCommunity ? undefined : (item.nursery || undefined),
+        nurseryName: item.nurseryName || item.sellerName || 'Thottam',
+        sellerName: item.sellerName || item.nurseryName || 'Thottam',
+        sellerKind: isCommunity ? 'community' : 'nursery',
+        communitySeller: item.communitySeller || undefined,
         subtotal: 0,
         itemCount: 0,
+        deliveryFee: 0,
+        deliveryMethod: item.deliveryMethod || (isCommunity ? 'local_delivery' : 'courier'),
+        dispatchPrepHours: item.dispatchPrepHours || 0,
         fulfillmentStatus: 'pending',
         settlementStatus: 'unsettled',
       });
@@ -66,17 +96,48 @@ function buildSellerGroups(orderItems, commissionPercent = 0) {
     const group = groups.get(key);
     group.subtotal += item.price * item.quantity;
     group.itemCount += item.quantity;
+    const fee = Number(item.deliveryFee) || 0;
+    if (fee > group.deliveryFee) group.deliveryFee = fee;
+    if (item.deliveryMethod) group.deliveryMethod = item.deliveryMethod;
   }
 
   return [...groups.values()].map((group) => {
-    const commissionAmount = Math.round((group.subtotal * Number(commissionPercent || 0)) / 100);
-    return {
-      ...group,
-      commissionPercent: Number(commissionPercent) || 0,
-      commissionAmount,
-      sellerAmount: group.subtotal - commissionAmount,
-    };
+    const percent = group.sellerKind === 'community' ? communityPercent : commissionPercent;
+    return { ...group, ...settleGroupAmounts(group, percent) };
   });
+}
+
+function splitDelivery(groups, settings = DEFAULT_SETTINGS) {
+  const communityDelivery = (groups || [])
+    .filter((group) => group.sellerKind === 'community')
+    .reduce((sum, group) => sum + (Number(group.deliveryAllocation ?? group.deliveryFee) || 0), 0);
+  const nurserySubtotal = (groups || [])
+    .filter((group) => group.sellerKind !== 'community')
+    .reduce((sum, group) => sum + (Number(group.subtotal) || 0), 0);
+  let platformShipping = 0;
+  if (nurserySubtotal > 0) {
+    const threshold = Number(settings.freeDeliveryThreshold) || 0;
+    platformShipping = nurserySubtotal >= threshold ? 0 : FIXED_DELIVERY_FEE;
+  }
+  return {
+    communityDelivery,
+    platformShipping,
+    shippingCharge: platformShipping + communityDelivery,
+  };
+}
+
+function applyGroupDelivery(pricing, groups, settings = DEFAULT_SETTINGS) {
+  const split = splitDelivery(groups, settings);
+  const subtotal = Math.max(0, Number(pricing.subtotal) || 0);
+  const taxAmount = Math.max(0, Number(pricing.taxAmount) || 0);
+  const couponDiscount = Math.max(0, Number(pricing.couponDiscount) || 0);
+  return {
+    ...pricing,
+    shippingCharge: split.shippingCharge,
+    communityDelivery: split.communityDelivery,
+    platformShipping: split.platformShipping,
+    totalAmount: Math.max(0, subtotal + split.shippingCharge + taxAmount - couponDiscount),
+  };
 }
 
 function pinIsServiceable(pin, nurseryPins = [], settings = DEFAULT_SETTINGS) {
@@ -117,12 +178,21 @@ function couponDiscountAmount(coupon, subtotal) {
   return Math.min(coupon.discountValue, subtotal);
 }
 
+function razorpayEventId(event = {}) {
+  return event.id || `${event.event || 'event'}_${event.payload?.payment?.entity?.id || event.payload?.refund?.entity?.id || event.created_at || ''}`;
+}
+
 module.exports = {
   DEFAULT_SETTINGS,
   verifyPaymentSignature,
   verifyWebhookSignature,
   calculateOrderPricing,
   buildSellerGroups,
+  settleGroupAmounts,
+  splitDelivery,
+  applyGroupDelivery,
   pinIsServiceable,
   couponDiscountAmount,
+  razorpayEventId,
+  FIXED_DELIVERY_FEE,
 };

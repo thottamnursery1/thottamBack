@@ -1,12 +1,13 @@
 const Product = require('../models/Product');
 const Category = require('../models/Category');
 const Nursery = require('../models/Nursery');
+const CommunitySeller = require('../models/CommunitySeller');
 const PlatformSettings = require('../models/PlatformSettings');
 const { asyncHandler, createError } = require('../utils/errorUtils');
 const { cloudinary } = require('../config/cloudinary');
 const { pinIsServiceable } = require('../services/commerce');
 
-const catalogSelect = 'name images price mrp discountPercent slug ratings stock plantInfo nursery beginnerFriendly isBestSeller isNewArrival isFeatured plantType seasonalCollection';
+const catalogSelect = 'name images price mrp discountPercent slug ratings stock plantInfo nursery beginnerFriendly isBestSeller isNewArrival isFeatured plantType seasonalCollection listingSource communitySeller fulfillmentOptions dispatchPrepHours localDeliveryFee plantForm deliveryAvailability';
 
 async function visibleNurseryIds(deliveryPin) {
   const settings = await PlatformSettings.getSettings();
@@ -21,12 +22,35 @@ function showDemoCatalog(settings) {
   return process.env.NODE_ENV !== 'production' && settings.demoMode !== false;
 }
 
-async function catalogFilter({ deliveryPin } = {}) {
+async function visibleCommunityIds(deliveryPin, sellerType) {
+  const filter = { status: 'approved' };
+  if (deliveryPin) filter.serviceablePins = String(deliveryPin);
+  if (['home_gardener', 'plant_enthusiast', 'small_grower'].includes(sellerType)) filter.sellerType = sellerType;
+  const sellers = await CommunitySeller.find(filter).select('_id');
+  return sellers.map((seller) => seller._id);
+}
+
+async function catalogFilter({ deliveryPin, sellerType } = {}) {
   const settings = await PlatformSettings.getSettings();
   const approvedIds = await visibleNurseryIds(deliveryPin);
+  const communityIds = await visibleCommunityIds(deliveryPin, sellerType);
+  const communityClause = {
+    listingSource: 'community',
+    communitySeller: { $in: communityIds },
+    paused: { $ne: true },
+    moderationStatus: { $nin: ['flagged', 'removed'] },
+  };
   const nurseryClause = deliveryPin
-    ? { nursery: { $in: approvedIds } }
-    : { $or: [{ nursery: { $in: approvedIds } }, { nursery: null }, { nursery: { $exists: false } }] };
+    ? { nursery: { $in: approvedIds }, listingSource: { $ne: 'community' } }
+    : {
+      listingSource: { $ne: 'community' },
+      $or: [{ nursery: { $in: approvedIds } }, { nursery: null }, { nursery: { $exists: false } }],
+    };
+  const sourceClause = sellerType === 'nursery'
+    ? nurseryClause
+    : sellerType === 'community' || ['home_gardener', 'plant_enthusiast', 'small_grower'].includes(sellerType)
+      ? communityClause
+      : { $or: [nurseryClause, communityClause] };
   const filter = {
     isActive: true,
     $and: [
@@ -36,7 +60,7 @@ async function catalogFilter({ deliveryPin } = {}) {
         { listingStatus: { $exists: false } },
         { listingStatus: null },
       ] },
-      nurseryClause,
+      sourceClause,
     ],
   };
   if (!showDemoCatalog(settings)) filter.isDemo = { $ne: true };
@@ -49,10 +73,11 @@ const getProducts = asyncHandler(async (req, res) => {
     sunlight, careLevel, indoorOutdoor, plantType,
     isFeatured, isBestSeller, isNewArrival, isOnSale,
     nursery, availability, deliveryPin, beginner, seasonal,
+    sellerType, deliveryMethod,
     sort = '-createdAt', page = 1, limit = 12,
   } = req.query;
 
-  const filter = await catalogFilter({ deliveryPin });
+  const filter = await catalogFilter({ deliveryPin, sellerType });
 
   if (search) filter.$text = { $search: search };
   if (category) {
@@ -79,6 +104,7 @@ const getProducts = asyncHandler(async (req, res) => {
   if (seasonal) filter.seasonalCollection = seasonal;
   if (availability === 'in') filter.stock = { $gt: 0 };
   if (availability === 'out') filter.stock = 0;
+  if (deliveryMethod) filter.fulfillmentOptions = deliveryMethod;
   if (nursery) {
     const nurseryDoc = /^[0-9a-fA-F]{24}$/.test(nursery)
       ? await Nursery.findOne({ _id: nursery, status: 'approved' })
@@ -97,7 +123,10 @@ const getProducts = asyncHandler(async (req, res) => {
   };
   const sortObj = sortMap[sort] || { createdAt: -1 };
   const skip = (Number(page) - 1) * Number(limit);
-  const query = Product.find(filter).populate('category', 'name slug').populate('nursery', 'name slug address.city logo');
+  const query = Product.find(filter)
+    .populate('category', 'name slug')
+    .populate('nursery', 'name slug address.city logo')
+    .populate('communitySeller', 'displayName slug sellerType ratings pickupAddress.city');
   if (sort === 'relevance' && search) query.select({ score: { $meta: 'textScore' } });
 
   const [products, total] = await Promise.all([
@@ -117,7 +146,8 @@ const getProduct = asyncHandler(async (req, res, next) => {
   const query = id.match(/^[0-9a-fA-F]{24}$/) ? { _id: id } : { slug: id };
   const product = await Product.findOne({ ...query, isActive: true })
     .populate('category', 'name slug')
-    .populate('nursery', 'name slug description logo address status serviceablePins');
+    .populate('nursery', 'name slug description logo address status serviceablePins')
+    .populate('communitySeller', 'displayName slug sellerType bio ratings pickupAddress status serviceablePins');
   const settings = await PlatformSettings.getSettings();
   if (!product || (product.approvalStatus && product.approvalStatus !== 'approved')) {
     return next(createError(404, 'Product not found.'));
@@ -130,6 +160,11 @@ const getProduct = asyncHandler(async (req, res, next) => {
   }
   if (product.nursery && product.nursery.status !== 'approved') {
     return next(createError(404, 'Product not found.'));
+  }
+  if (product.listingSource === 'community') {
+    if (!product.communitySeller || product.communitySeller.status !== 'approved' || product.moderationStatus === 'removed' || product.moderationStatus === 'flagged') {
+      return next(createError(404, 'Product not found.'));
+    }
   }
 
   const related = await Product.find({
@@ -148,12 +183,26 @@ const getProduct = asyncHandler(async (req, res, next) => {
     }).limit(4).populate('nursery', 'name slug').select(catalogSelect)
     : [];
 
-  res.json({ success: true, product, related, fromNursery });
+  const fromSeller = product.communitySeller
+    ? await Product.find({
+      communitySeller: product.communitySeller._id,
+      _id: { $ne: product._id },
+      isActive: true,
+      approvalStatus: 'approved',
+      moderationStatus: 'clear',
+    }).limit(4).populate('communitySeller', 'displayName slug sellerType ratings').select(catalogSelect)
+    : [];
+
+  res.json({ success: true, product, related, fromNursery, fromSeller });
 });
 
 const getFeaturedProducts = asyncHandler(async (req, res) => {
   const base = await catalogFilter();
-  const pick = (extra) => Product.find({ ...base, ...extra }).limit(8).populate('nursery', 'name slug address.city').select(catalogSelect);
+  const pick = (extra) => Product.find({ ...base, ...extra })
+    .limit(8)
+    .populate('nursery', 'name slug address.city')
+    .populate('communitySeller', 'displayName slug sellerType ratings')
+    .select(catalogSelect);
   const [featured, bestSellers, newArrivals, onSale, beginners] = await Promise.all([
     pick({ isFeatured: true }),
     pick({ isBestSeller: true }),

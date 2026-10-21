@@ -5,15 +5,18 @@ const Coupon = require('../models/Coupon');
 const PlatformSettings = require('../models/PlatformSettings');
 const { asyncHandler, createError } = require('../utils/errorUtils');
 const logAudit = require('../utils/auditLog');
-const { calculateOrderPricing, buildSellerGroups, couponDiscountAmount } = require('../services/commerce');
-const { restoreItemStock } = require('../services/fulfillment');
-const { packagingFields } = require('../services/packaging');
+const CommunitySeller = require('../models/CommunitySeller');
+const { calculateOrderPricing, buildSellerGroups, couponDiscountAmount, applyGroupDelivery } = require('../services/commerce');
+const { deliveryChoice, canReceiveOrders } = require('../services/communityCommerce');
+const { restoreItemStock, releaseReservedInventory } = require('../services/fulfillment');
+const { packagingFields, withPackagingFee } = require('../services/packaging');
 
-const validateAndBuildOrder = async (cartItems, couponCode, userId) => {
+const validateAndBuildOrder = async (cartItems, couponCode, userId, options = {}) => {
   const errors = [];
   const orderItems = [];
   let subtotal = 0;
   const settings = await PlatformSettings.getSettings();
+  const postalCode = String(options.postalCode || '').trim();
 
   for (const item of cartItems) {
     const product = await Product.findOne({ _id: item.product, isActive: true })
@@ -24,9 +27,31 @@ const validateAndBuildOrder = async (cartItems, couponCode, userId) => {
       errors.push(`"${product.name}" is not approved for sale.`);
       continue;
     }
+    if (product.moderationStatus === 'flagged' || product.moderationStatus === 'removed' || product.paused) {
+      errors.push(`"${product.name}" is not available right now.`);
+      continue;
+    }
     if (product.nursery && (product.nursery.status !== 'approved' || product.nursery.shopOpen === false)) {
       errors.push(`"${product.name}" is not available from its nursery right now.`);
       continue;
+    }
+
+    let communitySeller = null;
+    let delivery = { method: '', fee: 0 };
+    if (product.listingSource === 'community') {
+      communitySeller = await CommunitySeller.findById(product.communitySeller);
+      if (!canReceiveOrders(communitySeller)) {
+        errors.push(`"${product.name}" is not available from its community seller right now.`);
+        continue;
+      }
+      delivery = deliveryChoice(product, settings);
+      if (postalCode && delivery.method !== 'pickup') {
+        const pins = communitySeller.serviceablePins || [];
+        if (pins.length && !pins.includes(postalCode)) {
+          errors.push(`"${product.name}" cannot be delivered to PIN ${postalCode}. Pickup may still be available from ${communitySeller.pickupAddress?.city || 'the seller'}.`);
+          continue;
+        }
+      }
     }
 
     let price = product.price;
@@ -59,7 +84,13 @@ const validateAndBuildOrder = async (cartItems, couponCode, userId) => {
       category: product.category?.name,
       nursery: product.nursery?._id,
       shopId: product.shopId || product.nursery?._id,
-      nurseryName: product.nursery?.name || item.nurseryName || 'Thottam',
+      nurseryName: communitySeller?.displayName || product.nursery?.name || item.nurseryName || 'Thottam',
+      listingSource: product.listingSource || 'nursery',
+      communitySeller: communitySeller?._id,
+      sellerName: communitySeller?.displayName || product.nursery?.name || 'Thottam',
+      sellerKind: communitySeller ? 'community' : 'nursery',
+      deliveryMethod: delivery.method,
+      deliveryFee: delivery.fee,
     });
     subtotal += price * item.quantity;
   }
@@ -81,11 +112,17 @@ const validateAndBuildOrder = async (cartItems, couponCode, userId) => {
     }
   }
 
+  const sellerGroups = buildSellerGroups(orderItems, settings.commissionPercent, {
+    communityCommissionPercent: settings.communityCommissionPercent,
+  });
   const pricing = {
-    ...calculateOrderPricing({ subtotal, settings, couponDiscount: discount }),
+    ...applyGroupDelivery(
+      calculateOrderPricing({ subtotal, settings, couponDiscount: discount }),
+      sellerGroups,
+      settings
+    ),
     couponCode: validatedCouponCode,
   };
-  const sellerGroups = buildSellerGroups(orderItems, settings.commissionPercent);
   return { orderItems, pricing, sellerGroups, settings };
 };
 
@@ -115,12 +152,17 @@ const createOrder = asyncHandler(async (req, res, next) => {
     return next(createError(400, 'Please choose whether you need a carton box before placing the order.'));
   }
 
-  const { orderItems, pricing, sellerGroups } = await validateAndBuildOrder(cart.items, couponCode || cart.couponCode, req.user._id);
+  const { orderItems, pricing, sellerGroups } = await validateAndBuildOrder(
+    cart.items,
+    couponCode || cart.couponCode,
+    req.user._id,
+    { postalCode: shippingAddress?.postalCode }
+  );
   const order = await Order.create({
     user: req.user._id,
     items: orderItems,
     shippingAddress,
-    pricing,
+    pricing: withPackagingFee(pricing, packaging),
     sellerGroups,
     paymentMethod,
     orderStatus: paymentMethod === 'cod' ? 'confirmed' : 'pending_payment',
@@ -147,8 +189,10 @@ const cancelOrder = asyncHandler(async (req, res, next) => {
   order.cancellationReason = req.body.reason || 'Cancelled by customer';
   order.sellerGroups.forEach((group) => { group.fulfillmentStatus = 'cancelled'; });
 
-  if (wasPaid && !order.inventoryIssue) {
+  if (wasPaid && order.inventoryCommitted && !order.inventoryIssue) {
     for (const item of order.items) await restoreItemStock(item);
+  } else if (order.inventoryReserved && !order.inventoryCommitted) {
+    await releaseReservedInventory(order);
   }
 
   await order.save();

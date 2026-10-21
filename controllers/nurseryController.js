@@ -8,6 +8,30 @@ const { createUser, findUserByEmail } = require('../services/identity');
 const { EMAIL_TAKEN_MESSAGE, normalizeEmail } = require('../services/roles');
 const { generateToken } = require('../utils/jwtUtils');
 
+const sessionNursery = (nursery) => ({
+  _id: nursery._id,
+  sellerCode: nursery.sellerCode,
+  name: nursery.name,
+  slug: nursery.slug,
+  ownerName: nursery.ownerName,
+  email: nursery.email,
+  phone: nursery.phone,
+  description: nursery.description || '',
+  logo: nursery.logo || '',
+  documents: nursery.documents || [],
+  address: {
+    line1: nursery.address?.line1 || '',
+    line2: nursery.address?.line2 || '',
+    city: nursery.address?.city || '',
+    state: nursery.address?.state || '',
+    postalCode: nursery.address?.postalCode || '',
+  },
+  serviceablePins: nursery.serviceablePins || [],
+  gstin: nursery.gstin || '',
+  businessType: nursery.businessType || 'proprietorship',
+  status: nursery.status,
+});
+
 const publicNursery = (nursery, productCount = 0) => ({
   _id: nursery._id,
   sellerCode: nursery.sellerCode,
@@ -126,7 +150,7 @@ const registerNursery = asyncHandler(async (req, res, next) => {
       phone: user.phone,
       role: user.role,
     },
-    nursery: { _id: nursery._id, sellerCode: nursery.sellerCode, name: nursery.name, status: nursery.status, slug: nursery.slug },
+    nursery: sessionNursery(nursery),
     message: 'Your shop registration request has been submitted successfully. You can access product management after your shop is approved.',
   });
 });

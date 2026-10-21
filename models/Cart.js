@@ -16,6 +16,10 @@ const cartItemSchema = new mongoose.Schema({
   variantName: String,
   nursery: { type: mongoose.Schema.Types.ObjectId, ref: 'Nursery' },
   nurseryName: String,
+  sellerKind: { type: String, enum: ['nursery', 'community'], default: 'nursery' },
+  communitySeller: { type: mongoose.Schema.Types.ObjectId, ref: 'CommunitySeller' },
+  deliveryMethod: String,
+  deliveryFee: { type: Number, default: 0 },
 }, { _id: true });
 
 const cartSchema = new mongoose.Schema({

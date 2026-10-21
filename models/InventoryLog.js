@@ -9,7 +9,7 @@ const inventoryLogSchema = new mongoose.Schema({
   variantId: mongoose.Schema.Types.ObjectId,
   changeType: {
     type: String,
-    enum: ['restock', 'sale', 'adjustment', 'return', 'damage', 'initial'],
+    enum: ['restock', 'sale', 'adjustment', 'return', 'damage', 'initial', 'reservation', 'release'],
     required: true,
   },
   quantityChange: { type: Number, required: true }, // positive = added, negative = removed

@@ -116,6 +116,32 @@ const productSchema = new mongoose.Schema({
     height: Number,
   },
   deliveryInfo: String,
+  listingSource: {
+    type: String,
+    enum: ['nursery', 'community'],
+    default: 'nursery',
+    index: true,
+  },
+  communitySeller: { type: mongoose.Schema.Types.ObjectId, ref: 'CommunitySeller', index: true },
+  fulfillmentOptions: [{
+    type: String,
+    enum: ['pickup', 'local_delivery', 'courier'],
+  }],
+  dispatchPrepHours: { type: Number, default: 24, min: 0, max: 168 },
+  plantForm: {
+    type: String,
+    enum: ['seedling', 'cutting', 'propagated', 'mature', 'supply', ''],
+    default: '',
+  },
+  localDeliveryFee: { type: Number, min: 0 },
+  paused: { type: Boolean, default: false },
+  pauseReason: { type: String, default: '' },
+  moderationStatus: {
+    type: String,
+    enum: ['clear', 'flagged', 'removed'],
+    default: 'clear',
+  },
+  moderationNote: { type: String, maxlength: 400, default: '' },
 }, { timestamps: true });
 
 // Auto-generate slug
@@ -150,6 +176,13 @@ productSchema.pre('save', function (next) {
     this.listingStatus = 'pending';
     this.isActive = false;
   }
+
+  if (this.listingSource === 'community' && (this.paused || this.moderationStatus === 'flagged' || this.moderationStatus === 'removed')) {
+    this.isActive = false;
+    if (this.moderationStatus === 'removed') this.listingStatus = 'rejected';
+    else if (this.moderationStatus === 'flagged') this.listingStatus = 'pending';
+    else this.listingStatus = 'draft';
+  }
   next();
 });
 
@@ -162,6 +195,8 @@ productSchema.virtual('effectivePrice').get(function () {
 productSchema.index({ slug: 1 });
 productSchema.index({ category: 1 });
 productSchema.index({ nursery: 1, isActive: 1 });
+productSchema.index({ listingSource: 1, communitySeller: 1, isActive: 1 });
+productSchema.index({ moderationStatus: 1, listingSource: 1 });
 productSchema.index({ sellerId: 1, listingStatus: 1 });
 productSchema.index({ approvalStatus: 1 });
 productSchema.index({ listingStatus: 1 });

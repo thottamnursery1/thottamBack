@@ -63,6 +63,7 @@ const userSchema = new mongoose.Schema({
   resetPasswordToken: String,
   resetPasswordExpire: Date,
   lastLogin: Date,
+  plantExchangeSuspended: { type: Boolean, default: false },
 }, { timestamps: true });
 
 userSchema.pre('save', function syncAccountStatus(next) {

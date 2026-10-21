@@ -1,13 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const { getProductReviews, addReview, deleteReview, getRecentReviews } = require('../controllers/reviewController');
+const rateLimit = require('express-rate-limit');
 const { protect } = require('../middleware/auth');
 const { body } = require('express-validator');
 const validate = require('../middleware/validate');
 
 router.get('/recent', getRecentReviews);
 router.get('/:productId', getProductReviews);
-router.post('/:productId', protect, [
+router.post('/:productId', protect, rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { success: false, message: 'Too many reviews. Please try again later.' },
+}), [
   body('rating').isInt({ min: 1, max: 5 }).withMessage('Rating must be between 1 and 5'),
   body('comment').notEmpty().withMessage('Review comment is required').isLength({ max: 1000 }),
 ], validate, addReview);

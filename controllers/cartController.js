@@ -3,22 +3,30 @@ const Product = require('../models/Product');
 const Coupon = require('../models/Coupon');
 const PlatformSettings = require('../models/PlatformSettings');
 const { asyncHandler, createError } = require('../utils/errorUtils');
-const { calculateOrderPricing, buildSellerGroups, couponDiscountAmount } = require('../services/commerce');
+const { calculateOrderPricing, buildSellerGroups, couponDiscountAmount, applyGroupDelivery } = require('../services/commerce');
+const { deliveryChoice } = require('../services/communityCommerce');
 
 const buildCartResponse = async (cart) => {
   const settings = await PlatformSettings.getSettings();
   const subtotal = cart.items.reduce((sum, i) => sum + i.price * i.quantity, 0);
-  const pricing = calculateOrderPricing({
-    subtotal,
-    settings,
-    couponDiscount: cart.couponDiscount || 0,
-  });
   const sellerGroups = buildSellerGroups(cart.items.map((item) => ({
     nursery: item.nursery,
     nurseryName: item.nurseryName,
+    communitySeller: item.communitySeller,
+    sellerKind: item.sellerKind,
+    sellerName: item.nurseryName,
     price: item.price,
     quantity: item.quantity,
-  })), settings.commissionPercent);
+    deliveryFee: item.deliveryFee || 0,
+    deliveryMethod: item.deliveryMethod,
+  })), settings.commissionPercent, {
+    communityCommissionPercent: settings.communityCommissionPercent,
+  });
+  const pricing = applyGroupDelivery(calculateOrderPricing({
+    subtotal,
+    settings,
+    couponDiscount: cart.couponDiscount || 0,
+  }), sellerGroups, settings);
 
   return {
     cart,
@@ -47,14 +55,24 @@ const getCart = asyncHandler(async (req, res) => {
 const addToCart = asyncHandler(async (req, res, next) => {
   const { productId, quantity = 1, variantId } = req.body;
 
-  const product = await Product.findOne({ _id: productId, isActive: true }).populate('nursery', 'name status shopOpen');
+  const product = await Product.findOne({ _id: productId, isActive: true })
+    .populate('nursery', 'name status shopOpen')
+    .populate('communitySeller', 'displayName status');
   if (!product) return next(createError(404, 'Product not found.'));
   if (product.approvalStatus && product.approvalStatus !== 'approved') {
     return next(createError(400, 'This product is not available for purchase.'));
   }
+  if (product.moderationStatus === 'flagged' || product.moderationStatus === 'removed' || product.paused) {
+    return next(createError(400, 'This listing is not available for purchase.'));
+  }
   if (product.nursery && (product.nursery.status !== 'approved' || product.nursery.shopOpen === false)) {
     return next(createError(400, 'This nursery is not currently selling.'));
   }
+  if (product.listingSource === 'community' && product.communitySeller?.status !== 'approved') {
+    return next(createError(400, 'This community seller is not currently selling.'));
+  }
+  const settings = await PlatformSettings.getSettings();
+  const delivery = product.listingSource === 'community' ? deliveryChoice(product, settings) : { method: '', fee: 0 };
 
   let effectivePrice = product.price;
   let variantName = null;
@@ -94,7 +112,11 @@ const addToCart = asyncHandler(async (req, res, next) => {
       sku,
       variantName,
       nursery: product.nursery?._id,
-      nurseryName: product.nursery?.name || 'Root & Bloom',
+      nurseryName: product.communitySeller?.displayName || product.nursery?.name || 'Thottam',
+      sellerKind: product.listingSource === 'community' ? 'community' : 'nursery',
+      communitySeller: product.communitySeller?._id,
+      deliveryMethod: delivery.method,
+      deliveryFee: delivery.fee,
     });
   }
 

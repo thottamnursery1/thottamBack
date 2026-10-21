@@ -16,6 +16,8 @@ router.use(protect, requireSeller);
 router.get('/staff', listStaff);
 router.post('/staff', inviteProductAdmin);
 
+router.get('/inventory', seller.inventory);
+router.post('/inventory/adjust', seller.adjustInventory);
 router.get('/dashboard', seller.dashboard);
 router.put('/profile', seller.updateProfile);
 router.get('/enquiries', listSellerEnquiries);

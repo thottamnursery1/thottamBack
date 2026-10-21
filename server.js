@@ -27,6 +27,8 @@ const nurseryRoutes = require('./routes/nurseryRoutes');
 const sellerRoutes = require('./routes/sellerRoutes');
 const enquiryRoutes = require('./routes/enquiryRoutes');
 const productAdminRoutes = require('./routes/productAdminRoutes');
+const communityRoutes = require('./routes/communityRoutes');
+const plantRoutes = require('./routes/plantRoutes');
 
 // Ensure logs directory exists
 if (!fs.existsSync('logs')) fs.mkdirSync('logs');
@@ -75,6 +77,8 @@ app.use('/api/nurseries', nurseryRoutes);
 app.use('/api/seller', sellerRoutes);
 app.use('/api/product-admin', productAdminRoutes);
 app.use('/api/enquiries', enquiryRoutes);
+app.use('/api/community', communityRoutes);
+app.use('/api/plants', plantRoutes);
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {

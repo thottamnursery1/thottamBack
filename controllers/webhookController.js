@@ -6,8 +6,8 @@ const Coupon = require('../models/Coupon');
 const Cart = require('../models/Cart');
 const WebhookEvent = require('../models/WebhookEvent');
 const logger = require('../utils/logger');
-const { verifyWebhookSignature } = require('../services/commerce');
-const { commitPaidInventory, recordSettlements } = require('../services/fulfillment');
+const { verifyWebhookSignature, razorpayEventId } = require('../services/commerce');
+const { commitPaidInventory, recordSettlements, releaseReservedInventory } = require('../services/fulfillment');
 
 // @desc    Handle Razorpay webhooks
 // @route   POST /api/webhooks/razorpay
@@ -35,7 +35,7 @@ const handleRazorpayWebhook = async (req, res) => {
     return res.status(400).json({ success: false, message: 'Invalid JSON' });
   }
 
-  const eventId = event.id || `${event.event}_${event.payload?.payment?.entity?.id || event.created_at || ''}`;
+  const eventId = razorpayEventId(event);
   const seen = await WebhookEvent.findOne({ eventId });
   if (seen) {
     logger.info(`Duplicate webhook event ignored: ${eventId}`);
@@ -141,10 +141,13 @@ const handlePaymentCaptured = async (payment) => {
 };
 
 const handlePaymentFailed = async (payment) => {
-  await Order.findOneAndUpdate(
-    { razorpayOrderId: payment.order_id, paymentStatus: { $ne: 'paid' } },
-    { paymentStatus: 'failed', orderStatus: 'cancelled' }
-  );
+  const order = await Order.findOne({ razorpayOrderId: payment.order_id, paymentStatus: { $ne: 'paid' } });
+  if (order) {
+    await releaseReservedInventory(order);
+    order.paymentStatus = 'failed';
+    order.orderStatus = 'cancelled';
+    await order.save();
+  }
   await Payment.findOneAndUpdate(
     { razorpayOrderId: payment.order_id },
     {

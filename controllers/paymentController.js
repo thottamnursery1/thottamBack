@@ -12,8 +12,11 @@ const logAudit = require('../utils/auditLog');
 const logger = require('../utils/logger');
 
 const { verifyPaymentSignature } = require('../services/commerce');
-const { commitPaidInventory, recordSettlements } = require('../services/fulfillment');
-const { packagingFields } = require('../services/packaging');
+const { commitPaidInventory, recordSettlements, reserveOrderInventory, releaseReservedInventory } = require('../services/fulfillment');
+const RefundRecord = require('../models/RefundRecord');
+const SellerSettlement = require('../models/SellerSettlement');
+const { allocateRefund } = require('../services/communityCommerce');
+const { packagingFields, withPackagingFee } = require('../services/packaging');
 
 const getRazorpay = () => {
   if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET || String(process.env.RAZORPAY_KEY_ID).includes('xxxx')) {
@@ -45,45 +48,74 @@ const createPaymentOrder = asyncHandler(async (req, res, next) => {
   const { orderItems, pricing, sellerGroups } = await validateAndBuildOrder(
     cart.items,
     couponCode || cart.couponCode,
-    req.user._id
+    req.user._id,
+    { postalCode: shippingAddress?.postalCode }
   );
 
-  const amountInPaise = Math.round(pricing.totalAmount * 100);
+  const charged = withPackagingFee(pricing, packaging);
+  const amountInPaise = Math.round(charged.totalAmount * 100);
   if (amountInPaise < 100) {
     return next(createError(400, 'Order amount must be at least ₹1.'));
   }
 
-  await Order.updateMany(
-    { user: req.user._id, orderStatus: 'pending_payment', paymentStatus: 'pending' },
-    { orderStatus: 'cancelled', cancellationReason: 'Replaced by a new checkout attempt' }
-  );
-
-  const razorpay = getRazorpay();
-  const razorpayOrder = await razorpay.orders.create({
-    amount: amountInPaise,
-    currency: 'INR',
-    receipt: `rcpt_${Date.now()}`,
-    notes: {
-      userId: req.user._id.toString(),
-      userEmail: req.user.email,
-    },
+  const staleOrders = await Order.find({
+    user: req.user._id,
+    orderStatus: 'pending_payment',
+    paymentStatus: 'pending',
   });
+  for (const stale of staleOrders) {
+    await releaseReservedInventory(stale);
+    stale.orderStatus = 'cancelled';
+    stale.cancellationReason = 'Replaced by a new checkout attempt';
+    await stale.save();
+  }
 
-  // Create pending order in DB
   const order = await Order.create({
     user: req.user._id,
     items: orderItems,
     shippingAddress,
-    pricing,
+    pricing: charged,
     paymentMethod: 'razorpay',
     orderStatus: 'pending_payment',
     paymentStatus: 'pending',
-    razorpayOrderId: razorpayOrder.id,
     sellerGroups,
     ...packaging,
   });
 
-  // Create payment record
+  const reserved = await reserveOrderInventory(order, req.user._id);
+  if (!reserved) {
+    order.orderStatus = 'cancelled';
+    order.paymentStatus = 'failed';
+    order.cancellationReason = 'Stock could not be reserved';
+    await order.save();
+    return next(createError(409, 'Some items just went out of stock. You have not been charged.'));
+  }
+
+  let razorpayOrder;
+  try {
+    const razorpay = getRazorpay();
+    razorpayOrder = await razorpay.orders.create({
+      amount: amountInPaise,
+      currency: 'INR',
+      receipt: `rcpt_${order._id.toString().slice(-10)}`,
+      notes: {
+        userId: req.user._id.toString(),
+        userEmail: req.user.email,
+        orderId: order._id.toString(),
+      },
+    });
+  } catch (err) {
+    await releaseReservedInventory(order);
+    order.orderStatus = 'cancelled';
+    order.paymentStatus = 'failed';
+    order.cancellationReason = 'Payment provider could not create the order';
+    await order.save();
+    return next(err.statusCode ? err : createError(503, err.message || 'Razorpay is not available.'));
+  }
+
+  order.razorpayOrderId = razorpayOrder.id;
+  await order.save();
+
   await Payment.create({
     order: order._id,
     user: req.user._id,
@@ -132,10 +164,13 @@ const verifyPayment = asyncHandler(async (req, res, next) => {
       { razorpayOrderId: razorpay_order_id },
       { status: 'failed', razorpayPaymentId: razorpay_payment_id }
     );
-    await Order.findOneAndUpdate(
-      { razorpayOrderId: razorpay_order_id },
-      { paymentStatus: 'failed', orderStatus: 'cancelled' }
-    );
+    const failedOrder = await Order.findOne({ razorpayOrderId: razorpay_order_id });
+    if (failedOrder && failedOrder.paymentStatus !== 'paid') {
+      await releaseReservedInventory(failedOrder);
+      failedOrder.paymentStatus = 'failed';
+      failedOrder.orderStatus = 'cancelled';
+      await failedOrder.save();
+    }
 
     return next(createError(400, 'Payment verification failed. Invalid signature.'));
   }
@@ -257,6 +292,8 @@ const initiateRefund = asyncHandler(async (req, res, next) => {
     order.sellerGroups.forEach((group) => { group.settlementStatus = 'reversed'; });
   }
 
+  await applyCommunityRefund(order, refundAmount / 100, refund.id, req.user._id, reason);
+
   await order.save();
 
   await logAudit({
@@ -271,4 +308,49 @@ const initiateRefund = asyncHandler(async (req, res, next) => {
   res.json({ success: true, message: `Refund of ₹${refundAmount / 100} initiated.`, refund: order.refunds.slice(-1)[0] });
 });
 
-module.exports = { createPaymentOrder, verifyPayment, initiateRefund };
+async function applyCommunityRefund(order, amount, razorpayRefundId, userId, reason) {
+  const existing = razorpayRefundId
+    ? await RefundRecord.findOne({ razorpayRefundId })
+    : null;
+  if (existing) return existing;
+
+  let remaining = amount;
+  const communityGroups = (order.sellerGroups || []).filter((group) => group.sellerKind === 'community' && group.communitySeller);
+  for (const group of communityGroups) {
+    if (remaining <= 0) break;
+    const settlement = await SellerSettlement.findOne({ order: order._id, communitySeller: group.communitySeller });
+    if (!settlement || settlement.status === 'reversed') continue;
+    const share = Math.min(remaining, (group.subtotal || 0) + (group.deliveryAllocation || 0));
+    const allocation = allocateRefund({
+      productSubtotal: settlement.productSubtotal,
+      commissionAmount: settlement.commissionAmount,
+      deliveryAllocation: settlement.deliveryAllocation,
+      sellerPayable: settlement.sellerPayable,
+      refundAmount: share,
+      status: settlement.status,
+    });
+    settlement.sellerPayable = allocation.sellerPayable;
+    settlement.commissionAmount = Math.max(0, settlement.commissionAmount - allocation.commissionReversal);
+    settlement.status = allocation.status;
+    if (allocation.exception) {
+      settlement.exception = `Refund of ₹${share} arrived after the payout was marked paid. Reconcile this seller balance manually.`;
+    }
+    await settlement.save();
+    if (allocation.status === 'reversed') group.settlementStatus = 'reversed';
+    await RefundRecord.create({
+      order: order._id,
+      communitySeller: group.communitySeller,
+      razorpayRefundId: communityGroups.length === 1 ? razorpayRefundId : undefined,
+      amount: share,
+      reason: reason || 'Refund',
+      status: 'initiated',
+      sellerReduction: allocation.sellerReduction,
+      commissionReversal: allocation.commissionReversal,
+      initiatedBy: userId,
+    });
+    remaining -= share;
+  }
+  return null;
+}
+
+module.exports = { createPaymentOrder, verifyPayment, initiateRefund, applyCommunityRefund };
