@@ -44,10 +44,29 @@ app.use(helmet());
 app.use(mongoSanitize());
 
 // ─── CORS ──────────────────────────────────────────────────────────────────────
+const configuredOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173')
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const isLocalDevOrigin = (origin) =>
+  /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+
 app.use(cors({
-  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  origin(origin, callback) {
+    if (!origin || configuredOrigins.includes(origin)) {
+      callback(null, true);
+      return;
+    }
+    // Vite falls back to the next free port (5174, 5175, …) when 5173 is taken.
+    if (process.env.NODE_ENV !== 'production' && isLocalDevOrigin(origin)) {
+      callback(null, true);
+      return;
+    }
+    callback(new Error(`Origin ${origin} is not allowed by CORS`));
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
 }));
 

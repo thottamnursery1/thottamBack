@@ -9,6 +9,7 @@ const Category = require('../models/Category');
 const { asyncHandler, createError } = require('../utils/errorUtils');
 const logAudit = require('../utils/auditLog');
 const { FIXED_DELIVERY_FEE } = require('../services/commerce');
+const { paymentSetupSatisfied, VERIFICATION } = require('../services/shopPayments');
 
 const platformOverview = asyncHandler(async (req, res) => {
   const [gross, payments, orderCount, activeNurseries, pendingSellers, refunds, recent] = await Promise.all([
@@ -63,10 +64,15 @@ const listSellers = asyncHandler(async (req, res) => {
   const sellers = await Nursery.find(filter).populate('owner', 'name email isActive').sort({ createdAt: -1 });
   res.json({
     success: true,
-    sellers: sellers.map((seller) => ({
-      ...seller.toObject(),
-      approvalStatus: publicShopStatus(seller.status),
-    })),
+    sellers: sellers.map((seller) => {
+      const plain = seller.toObject();
+      if (plain.paymentMethods?.qr) plain.paymentMethods.qr.imageData = '';
+      return {
+        ...plain,
+        approvalStatus: publicShopStatus(seller.status),
+        paymentSetupSatisfied: paymentSetupSatisfied(seller),
+      };
+    }),
   });
 });
 
@@ -82,16 +88,30 @@ const getSeller = asyncHandler(async (req, res, next) => {
       { $group: { _id: null, sales: { $sum: '$sellerGroups.subtotal' }, orders: { $sum: 1 } } },
     ]),
   ]);
-  res.json({ success: true, seller, products, performance: performance[0] || { sales: 0, orders: 0 } });
+  res.json({
+    success: true,
+    seller,
+    products,
+    performance: performance[0] || { sales: 0, orders: 0 },
+    paymentSetupSatisfied: paymentSetupSatisfied(seller),
+  });
 });
 
 const reviewSeller = asyncHandler(async (req, res, next) => {
-  const { action, reason } = req.body;
-  const seller = await Nursery.findById(req.params.id);
+  const { action, reason, method, verificationStatus } = req.body;
+  const seller = await Nursery.findById(req.params.id).select('+paymentMethods.gateway.accountCipher');
   if (!seller) return next(createError(404, 'Seller not found.'));
 
   seller.reviewedBy = req.user._id;
   seller.reviewedAt = new Date();
+  if (action === 'approve' || action === 'reactivate') {
+    if (req.body.paymentReviewed !== true) {
+      return next(createError(400, 'Review the shop payment details before approval.'));
+    }
+    if (!paymentSetupSatisfied(seller)) {
+      return next(createError(400, 'This shop must have at least one valid payment method before it can be approved.'));
+    }
+  }
   if (action === 'approve') {
     seller.status = 'approved';
     seller.productAdminEnabled = true;
@@ -100,6 +120,26 @@ const reviewSeller = asyncHandler(async (req, res, next) => {
     seller.status = 'rejected';
     seller.productAdminEnabled = false;
     seller.rejectionReason = reason || 'Application did not meet platform requirements.';
+  } else if (action === 'request_changes') {
+    seller.status = 'changes_requested';
+    seller.productAdminEnabled = false;
+    seller.rejectionReason = reason || 'Update the shop or payment details and resubmit.';
+  } else if (action === 'set_payment_status') {
+    if (!['upi', 'qr', 'gateway'].includes(method)) return next(createError(400, 'Choose a payment method to review.'));
+    if (!VERIFICATION.includes(verificationStatus)) return next(createError(400, 'Unknown payment verification status.'));
+    const current = seller.paymentMethods?.[method];
+    if (!current?.enabled) return next(createError(400, 'That payment method is not configured.'));
+    if (method === 'qr' && verificationStatus === 'verified' && !current.hasImage && !current.imageData) {
+      return next(createError(400, 'A QR image must be uploaded before it can be verified.'));
+    }
+    if (method === 'gateway' && verificationStatus === 'verified' && !current.accountLast4) {
+      return next(createError(400, 'Bank account details are required before the gateway can be verified.'));
+    }
+    current.verificationStatus = verificationStatus;
+    if (method === 'gateway') {
+      current.onboardingStatus = verificationStatus === 'verified' ? 'verified' : verificationStatus === 'rejected' ? 'failed' : 'pending';
+    }
+    seller.markModified('paymentMethods');
   } else if (action === 'suspend') {
     seller.status = 'suspended';
     seller.productAdminEnabled = false;
@@ -107,6 +147,7 @@ const reviewSeller = asyncHandler(async (req, res, next) => {
   } else if (action === 'reactivate') {
     seller.status = 'approved';
     seller.productAdminEnabled = true;
+    seller.rejectionReason = '';
   } else {
     return next(createError(400, 'Unknown seller action.'));
   }
@@ -115,7 +156,7 @@ const reviewSeller = asyncHandler(async (req, res, next) => {
     await User.findByIdAndUpdate(seller.owner, { role: 'shop_admin', shop: seller._id });
   }
   await seller.save();
-  await logAudit({ action: `seller.${action}`, performedBy: req.user._id, targetId: seller._id, targetModel: 'Nursery', details: { reason }, req });
+  await logAudit({ action: `seller.${action}`, performedBy: req.user._id, targetId: seller._id, targetModel: 'Nursery', details: { reason, method, verificationStatus }, req });
   res.json({ success: true, seller });
 });
 
@@ -136,12 +177,14 @@ const listAllProducts = asyncHandler(async (req, res) => {
 const moderateProduct = asyncHandler(async (req, res, next) => {
   const product = await Product.findById(req.params.id);
   if (!product) return next(createError(404, 'Product not found.'));
-  const { approvalStatus, isActive, isFeatured, isBestSeller, isNewArrival, seasonalCollection } = req.body;
+  const { approvalStatus, isActive, isFeatured, isBestSeller, isNewArrival, seasonalCollection, seasonalTags, beginnerFriendly } = req.body;
   if (approvalStatus) product.approvalStatus = approvalStatus;
   if (typeof isActive === 'boolean') product.isActive = isActive;
   if (typeof isFeatured === 'boolean') product.isFeatured = isFeatured;
   if (typeof isBestSeller === 'boolean') product.isBestSeller = isBestSeller;
   if (typeof isNewArrival === 'boolean') product.isNewArrival = isNewArrival;
+  if (typeof beginnerFriendly === 'boolean') product.beginnerFriendly = beginnerFriendly;
+  if (seasonalTags !== undefined) product.seasonalTags = seasonalTags;
   if (seasonalCollection !== undefined) product.seasonalCollection = seasonalCollection;
   if (approvalStatus === 'approved' && !['published', 'out_of_stock'].includes(product.listingStatus)) {
     product.listingStatus = product.stock > 0 ? 'published' : 'out_of_stock';

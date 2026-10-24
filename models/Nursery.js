@@ -26,8 +26,51 @@ const nurserySchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['pending', 'approved', 'rejected', 'suspended'],
+    enum: ['pending', 'approved', 'rejected', 'changes_requested', 'suspended'],
     default: 'pending',
+  },
+  paymentMethods: {
+    upi: {
+      enabled: { type: Boolean, default: false },
+      upiId: { type: String, trim: true, lowercase: true, default: '' },
+      verificationStatus: {
+        type: String,
+        enum: ['unverified', 'pending_review', 'verified', 'rejected'],
+        default: 'unverified',
+      },
+    },
+    qr: {
+      enabled: { type: Boolean, default: false },
+      imageData: { type: String, default: '' },
+      fileName: { type: String, default: '' },
+      mimeType: { type: String, default: '' },
+      hasImage: { type: Boolean, default: false },
+      verificationStatus: {
+        type: String,
+        enum: ['unverified', 'pending_review', 'verified', 'rejected'],
+        default: 'unverified',
+      },
+    },
+    gateway: {
+      enabled: { type: Boolean, default: false },
+      provider: { type: String, enum: ['bank', 'razorpay'], default: 'bank' },
+      accountHolder: { type: String, default: '' },
+      bankName: { type: String, default: '' },
+      ifsc: { type: String, uppercase: true, default: '' },
+      accountLast4: { type: String, default: '' },
+      accountCipher: { type: String, default: '', select: false },
+      onboardingStatus: {
+        type: String,
+        enum: ['not_started', 'pending', 'verified', 'failed'],
+        default: 'not_started',
+      },
+      verificationStatus: {
+        type: String,
+        enum: ['unverified', 'pending_review', 'verified', 'rejected'],
+        default: 'unverified',
+      },
+      providerReference: { type: String, default: '' },
+    },
   },
   sellerCode: { type: String, unique: true, sparse: true, uppercase: true },
   documents: [{
@@ -64,6 +107,20 @@ nurserySchema.pre('save', async function (next) {
     this.sellerCode = await this.constructor.uniqueSellerCode();
   }
   next();
+});
+
+nurserySchema.set('toJSON', {
+  transform(doc, ret) {
+    if (ret.paymentMethods?.gateway) delete ret.paymentMethods.gateway.accountCipher;
+    return ret;
+  },
+});
+
+nurserySchema.set('toObject', {
+  transform(doc, ret) {
+    if (ret.paymentMethods?.gateway) delete ret.paymentMethods.gateway.accountCipher;
+    return ret;
+  },
 });
 
 nurserySchema.index({ status: 1 });

@@ -21,6 +21,9 @@ function shopAccessError(nursery) {
     return 'Your shop registration is pending approval. Product management stays locked until a super admin approves the shop.';
   }
   if (nursery.status === 'rejected') return nursery.rejectionReason || 'Your shop application was rejected.';
+  if (nursery.status === 'changes_requested') {
+    return nursery.rejectionReason || 'A super admin requested changes. Update the shop and payment details, then resubmit.';
+  }
   if (nursery.status === 'suspended') return 'This shop is suspended. Product management and publishing are blocked.';
   if (nursery.status !== 'approved') return 'This shop is not approved.';
   return '';

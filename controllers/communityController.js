@@ -235,6 +235,9 @@ async function listingPayload(body, next) {
       deliveryAvailability: options.includes('pickup')
         ? 'Local pickup or delivery from the community seller.'
         : 'Local delivery from the community seller.',
+      beginnerFriendly: Boolean(body.beginnerFriendly),
+      seasonalTags: Array.isArray(body.seasonalTags) ? body.seasonalTags : [],
+      seasonalCollection: Array.isArray(body.seasonalTags) ? (body.seasonalTags[0] || '') : (body.seasonalCollection || ''),
       plantInfo: {
         sunlightRequirement: body.plantInfo?.sunlightRequirement || 'N/A',
         wateringFrequency: body.plantInfo?.wateringFrequency || 'N/A',

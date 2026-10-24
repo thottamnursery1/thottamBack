@@ -5,11 +5,12 @@ const InventoryLog = require('../models/InventoryLog');
 const { asyncHandler, createError } = require('../utils/errorUtils');
 const logAudit = require('../utils/auditLog');
 const { ownedFilter } = require('../services/listingStatus');
+const { paymentSetupSatisfied, SELLING_BLOCKED_MESSAGE } = require('../services/shopPayments');
 
 const OWNED_FIELDS = [
   'name', 'description', 'shortDescription', 'category', 'price', 'mrp', 'sku', 'stock',
   'lowStockThreshold', 'tags', 'plantInfo', 'plantType', 'beginnerFriendly',
-  'seasonalCollection', 'images', 'weight', 'deliveryAvailability', 'subcategory',
+  'seasonalCollection', 'seasonalTags', 'images', 'weight', 'deliveryAvailability', 'subcategory',
 ];
 
 const pickProductBody = (body) => {
@@ -71,6 +72,7 @@ const dashboard = asyncHandler(async (req, res) => {
     bestsellers,
     salesChart,
     nursery: req.nursery,
+    paymentSetupSatisfied: paymentSetupSatisfied(req.nursery),
     reports: {
       day: await periodSales(nurseryId, 1),
       week: await periodSales(nurseryId, 7),
@@ -117,6 +119,10 @@ const createProduct = asyncHandler(async (req, res, next) => {
     return next(createError(400, 'Name, price, and description are required.'));
   }
   // Shop admins and shop assistants get auto-approved — no platform review needed
+  const publishing = req.body.listingStatus !== 'draft';
+  if (publishing && !paymentSetupSatisfied(req.nursery)) {
+    return next(createError(403, SELLING_BLOCKED_MESSAGE));
+  }
   const autoApprove = ['shop_admin', 'seller', 'shop_assistant', 'product_admin'].includes(req.user?.role);
   const product = await Product.create({
     ...data,

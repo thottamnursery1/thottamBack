@@ -5,6 +5,7 @@ const PlatformSettings = require('../models/PlatformSettings');
 const { asyncHandler, createError } = require('../utils/errorUtils');
 const { calculateOrderPricing, buildSellerGroups, couponDiscountAmount, applyGroupDelivery } = require('../services/commerce');
 const { deliveryChoice } = require('../services/communityCommerce');
+const { paymentSetupSatisfied } = require('../services/shopPayments');
 
 const buildCartResponse = async (cart) => {
   const settings = await PlatformSettings.getSettings();
@@ -56,7 +57,7 @@ const addToCart = asyncHandler(async (req, res, next) => {
   const { productId, quantity = 1, variantId } = req.body;
 
   const product = await Product.findOne({ _id: productId, isActive: true })
-    .populate('nursery', 'name status shopOpen')
+    .populate('nursery', 'name status shopOpen paymentMethods.upi.enabled paymentMethods.upi.upiId paymentMethods.upi.verificationStatus paymentMethods.qr.enabled paymentMethods.qr.hasImage paymentMethods.qr.mimeType paymentMethods.qr.verificationStatus paymentMethods.gateway.enabled paymentMethods.gateway.verificationStatus paymentMethods.gateway.onboardingStatus')
     .populate('communitySeller', 'displayName status');
   if (!product) return next(createError(404, 'Product not found.'));
   if (product.approvalStatus && product.approvalStatus !== 'approved') {
@@ -65,7 +66,11 @@ const addToCart = asyncHandler(async (req, res, next) => {
   if (product.moderationStatus === 'flagged' || product.moderationStatus === 'removed' || product.paused) {
     return next(createError(400, 'This listing is not available for purchase.'));
   }
-  if (product.nursery && (product.nursery.status !== 'approved' || product.nursery.shopOpen === false)) {
+  if (product.nursery && product.listingSource !== 'community' && (
+    product.nursery.status !== 'approved'
+    || product.nursery.shopOpen === false
+    || !paymentSetupSatisfied(product.nursery)
+  )) {
     return next(createError(400, 'This nursery is not currently selling.'));
   }
   if (product.listingSource === 'community' && product.communitySeller?.status !== 'approved') {

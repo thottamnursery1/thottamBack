@@ -6,13 +6,16 @@ const PlatformSettings = require('../models/PlatformSettings');
 const { asyncHandler, createError } = require('../utils/errorUtils');
 const { cloudinary } = require('../config/cloudinary');
 const { pinIsServiceable } = require('../services/commerce');
+const { paymentSetupSatisfied } = require('../services/shopPayments');
 
-const catalogSelect = 'name images price mrp discountPercent slug ratings stock plantInfo nursery beginnerFriendly isBestSeller isNewArrival isFeatured plantType seasonalCollection listingSource communitySeller fulfillmentOptions dispatchPrepHours localDeliveryFee plantForm deliveryAvailability';
+const catalogSelect = 'name images price mrp discountPercent slug ratings stock plantInfo nursery beginnerFriendly isBestSeller isNewArrival isFeatured plantType seasonalCollection seasonalTags listingSource communitySeller fulfillmentOptions dispatchPrepHours localDeliveryFee plantForm deliveryAvailability';
 
 async function visibleNurseryIds(deliveryPin) {
   const settings = await PlatformSettings.getSettings();
-  const nurseries = await Nursery.find({ status: 'approved', shopOpen: { $ne: false } }).select('serviceablePins');
+  const nurseries = await Nursery.find({ status: 'approved', shopOpen: { $ne: false } })
+    .select('serviceablePins paymentMethods.upi.enabled paymentMethods.upi.upiId paymentMethods.upi.verificationStatus paymentMethods.qr.enabled paymentMethods.qr.hasImage paymentMethods.qr.mimeType paymentMethods.qr.verificationStatus paymentMethods.gateway.enabled paymentMethods.gateway.verificationStatus paymentMethods.gateway.onboardingStatus');
   return nurseries.filter((nursery) => {
+    if (!paymentSetupSatisfied(nursery)) return false;
     if (!deliveryPin) return true;
     return pinIsServiceable(deliveryPin, nursery.serviceablePins, settings).ok;
   }).map((nursery) => nursery._id);
@@ -98,10 +101,10 @@ const getProducts = asyncHandler(async (req, res) => {
   if (isBestSeller === 'true') filter.isBestSeller = true;
   if (isNewArrival === 'true') filter.isNewArrival = true;
   if (isOnSale === 'true') filter.isOnSale = true;
-  if (beginner === 'true') {
-    filter.$and.push({ $or: [{ beginnerFriendly: true }, { 'plantInfo.careLevel': 'Easy' }] });
+  if (beginner === 'true') filter.beginnerFriendly = true;
+  if (seasonal) {
+    filter.$and.push({ $or: [{ seasonalTags: seasonal }, { seasonalCollection: seasonal }] });
   }
-  if (seasonal) filter.seasonalCollection = seasonal;
   if (availability === 'in') filter.stock = { $gt: 0 };
   if (availability === 'out') filter.stock = 0;
   if (deliveryMethod) filter.fulfillmentOptions = deliveryMethod;
@@ -196,6 +199,38 @@ const getProduct = asyncHandler(async (req, res, next) => {
   res.json({ success: true, product, related, fromNursery, fromSeller });
 });
 
+const COLLECTION_SIZE = 4;
+
+function collectionMatch(base, extra = {}) {
+  return {
+    ...base,
+    stock: { $gt: 0 },
+    price: { $gte: 0 },
+    name: { $type: 'string', $ne: '' },
+    'images.0.url': { $exists: true, $nin: [null, ''] },
+    listingStatus: { $nin: ['draft', 'rejected', 'pending', 'out_of_stock'] },
+    ...extra,
+    $and: [...(base.$and || []), ...(extra.$and || [])],
+  };
+}
+
+async function sampleCatalogProducts(match, limit = COLLECTION_SIZE) {
+  const count = await Product.countDocuments(match);
+  if (!count) return [];
+  const picked = await Product.aggregate([
+    { $match: match },
+    { $sample: { size: Math.min(limit, count) } },
+    { $project: { _id: 1 } },
+  ]);
+  const ids = picked.map((row) => row._id);
+  const products = await Product.find({ _id: { $in: ids } })
+    .populate('nursery', 'name slug address.city')
+    .populate('communitySeller', 'displayName slug sellerType ratings')
+    .select(catalogSelect);
+  const order = new Map(ids.map((id, index) => [String(id), index]));
+  return products.sort((a, b) => (order.get(String(a._id)) ?? 0) - (order.get(String(b._id)) ?? 0));
+}
+
 const getFeaturedProducts = asyncHandler(async (req, res) => {
   const base = await catalogFilter();
   const pick = (extra) => Product.find({ ...base, ...extra })
@@ -203,17 +238,15 @@ const getFeaturedProducts = asyncHandler(async (req, res) => {
     .populate('nursery', 'name slug address.city')
     .populate('communitySeller', 'displayName slug sellerType ratings')
     .select(catalogSelect);
-  const [featured, bestSellers, newArrivals, onSale, beginners] = await Promise.all([
+  const [featured, onSale, beginners, monsoon] = await Promise.all([
     pick({ isFeatured: true }),
-    pick({ isBestSeller: true }),
-    Product.find({ ...base, isNewArrival: true }).sort({ createdAt: -1 }).limit(8).populate('nursery', 'name slug address.city').select(catalogSelect),
     pick({ isOnSale: true }),
-    Product.find({
-      ...base,
-      $and: [...(base.$and || []), { $or: [{ beginnerFriendly: true }, { 'plantInfo.careLevel': 'Easy' }] }],
-    }).limit(8).populate('nursery', 'name slug address.city').select(catalogSelect),
+    sampleCatalogProducts(collectionMatch(base, { beginnerFriendly: true })),
+    sampleCatalogProducts(collectionMatch(base, {
+      $and: [{ $or: [{ seasonalTags: 'Monsoon' }, { seasonalCollection: 'Monsoon' }] }],
+    })),
   ]);
-  res.json({ success: true, featured, bestSellers, newArrivals, onSale, beginners });
+  res.json({ success: true, featured, onSale, beginners, monsoon });
 });
 
 // ─── Admin Controllers ────────────────────────────────────────────────────────

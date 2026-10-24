@@ -54,6 +54,13 @@ const productSchema = new mongoose.Schema({
     default: 'other',
   },
   seasonalCollection: { type: String, default: '' },
+  seasonalTags: {
+    type: [{
+      type: String,
+      enum: ['Monsoon', 'Summer', 'Winter'],
+    }],
+    default: [],
+  },
   isDemo: { type: Boolean, default: false },
   images: [{
     url: { type: String, required: true },
@@ -144,6 +151,52 @@ const productSchema = new mongoose.Schema({
   moderationNote: { type: String, maxlength: 400, default: '' },
 }, { timestamps: true });
 
+const SEASONAL_TAGS = ['Monsoon', 'Summer', 'Winter'];
+
+function canonicalSeason(value) {
+  return SEASONAL_TAGS.find((season) => season.toLowerCase() === String(value || '').trim().toLowerCase()) || '';
+}
+
+function canonicalSeasonList(values) {
+  return [...new Set((Array.isArray(values) ? values : []).map(canonicalSeason).filter(Boolean))];
+}
+
+function syncSeasonalFields(doc, { tagsModified = false } = {}) {
+  const fromTags = canonicalSeasonList(doc.seasonalTags);
+  const legacy = canonicalSeason(doc.seasonalCollection);
+  if (tagsModified) {
+    doc.seasonalTags = fromTags;
+    doc.seasonalCollection = fromTags[0] || '';
+    return;
+  }
+  if (fromTags.length) {
+    doc.seasonalTags = fromTags;
+    if (!legacy || !fromTags.includes(doc.seasonalCollection)) doc.seasonalCollection = fromTags[0];
+    return;
+  }
+  if (legacy) {
+    doc.seasonalTags = [legacy];
+    doc.seasonalCollection = legacy;
+  }
+}
+
+productSchema.pre('validate', function (next) {
+  syncSeasonalFields(this, { tagsModified: !this.isNew && this.isModified('seasonalTags') });
+  next();
+});
+
+productSchema.pre('findOneAndUpdate', function (next) {
+  const update = this.getUpdate() || {};
+  const target = update.$set || update;
+  if (target.seasonalTags !== undefined || target.seasonalCollection !== undefined) {
+    const tagsModified = target.seasonalTags !== undefined;
+    syncSeasonalFields(target, { tagsModified });
+    if (update.$set) update.$set = target;
+    this.setUpdate(update);
+  }
+  next();
+});
+
 // Auto-generate slug
 productSchema.pre('save', function (next) {
   if (this.nursery) {
@@ -201,6 +254,8 @@ productSchema.index({ sellerId: 1, listingStatus: 1 });
 productSchema.index({ approvalStatus: 1 });
 productSchema.index({ listingStatus: 1 });
 productSchema.index({ isActive: 1, isFeatured: 1 });
+productSchema.index({ beginnerFriendly: 1, isActive: 1, stock: 1 });
+productSchema.index({ seasonalTags: 1, isActive: 1, stock: 1 });
 productSchema.index({ 'ratings.average': -1 });
 productSchema.index({ price: 1 });
 productSchema.index({ createdAt: -1 });

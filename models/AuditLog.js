@@ -13,6 +13,7 @@ const auditLogSchema = new mongoose.Schema({
       'admin.access', 'category.create', 'category.update', 'category.delete',
       'inventory.adjustment',
       'seller.register', 'seller.approve', 'seller.reject', 'seller.suspend', 'seller.reactivate',
+      'seller.request_changes', 'seller.set_payment_status',
       'seller.product.create', 'seller.product.delete',
       'settings.update',
       'payment.capture',

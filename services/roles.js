@@ -108,10 +108,12 @@ function storedShopStatus(value) {
     PENDING_APPROVAL: 'pending',
     APPROVED: 'approved',
     REJECTED: 'rejected',
+    CHANGES_REQUESTED: 'changes_requested',
     SUSPENDED: 'suspended',
     pending: 'pending',
     approved: 'approved',
     rejected: 'rejected',
+    changes_requested: 'changes_requested',
     suspended: 'suspended',
   }[value] || '';
 }
@@ -121,6 +123,7 @@ function publicShopStatus(value) {
     pending: 'PENDING_APPROVAL',
     approved: 'APPROVED',
     rejected: 'REJECTED',
+    changes_requested: 'CHANGES_REQUESTED',
     suspended: 'SUSPENDED',
   }[value] || value;
 }

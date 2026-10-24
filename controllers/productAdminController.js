@@ -5,6 +5,7 @@ const { asyncHandler, createError } = require('../utils/errorUtils');
 const { createUser } = require('../services/identity');
 const { normalizeEmail } = require('../services/roles');
 const { ownedFilter } = require('../services/listingStatus');
+const { paymentSetupSatisfied, SELLING_BLOCKED_MESSAGE } = require('../services/shopPayments');
 const seller = require('./sellerController');
 
 const stats = asyncHandler(async (req, res) => {
@@ -48,6 +49,7 @@ const exportProducts = asyncHandler(async (req, res) => {
 const importProducts = asyncHandler(async (req, res, next) => {
   const rows = Array.isArray(req.body.products) ? req.body.products : [];
   if (!rows.length) return next(createError(400, 'Provide a products array to import.'));
+  if (!paymentSetupSatisfied(req.nursery)) return next(createError(403, SELLING_BLOCKED_MESSAGE));
   const created = [];
   for (const row of rows.slice(0, 100)) {
     if (!row.name || !row.description || row.price === undefined) continue;

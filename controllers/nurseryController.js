@@ -7,6 +7,15 @@ const logAudit = require('../utils/auditLog');
 const { createUser, findUserByEmail } = require('../services/identity');
 const { EMAIL_TAKEN_MESSAGE, normalizeEmail } = require('../services/roles');
 const { generateToken } = require('../utils/jwtUtils');
+const {
+  PAYMENT_REQUIRED_MESSAGE,
+  resolvePaymentMethods,
+  publicPaymentMethods,
+  paymentSetupSatisfied,
+  readGatewayFields,
+  completeGatewayOnboarding,
+  previewGateway,
+} = require('../services/shopPayments');
 
 const sessionNursery = (nursery) => ({
   _id: nursery._id,
@@ -30,6 +39,8 @@ const sessionNursery = (nursery) => ({
   gstin: nursery.gstin || '',
   businessType: nursery.businessType || 'proprietorship',
   status: nursery.status,
+  paymentMethods: publicPaymentMethods(nursery.paymentMethods),
+  paymentSetupSatisfied: paymentSetupSatisfied(nursery),
 });
 
 const publicNursery = (nursery, productCount = 0) => ({
@@ -79,7 +90,7 @@ const registerNursery = asyncHandler(async (req, res, next) => {
   const {
     nurseryName, ownerName, email, phone, password,
     line1, line2, city, state, postalCode, serviceablePins,
-    gstin, businessType, description, logo, documents,
+    gstin, businessType, description, logo, documents, paymentMethods,
   } = req.body;
 
   if (!nurseryName || !ownerName || !email || !phone || !password || !line1 || !city || !state || !postalCode) {
@@ -96,6 +107,9 @@ const registerNursery = asyncHandler(async (req, res, next) => {
     .split(/[\s,]+/)
     .map((p) => p.trim())
     .filter((p) => /^\d{6}$/.test(p));
+
+  const paymentResult = await resolvePaymentMethods(paymentMethods || {});
+  if (paymentResult.error) return next(createError(400, paymentResult.error || PAYMENT_REQUIRED_MESSAGE));
 
   const cleanDocuments = (Array.isArray(documents) ? documents : [])
     .filter((doc) => doc && doc.url)
@@ -127,6 +141,7 @@ const registerNursery = asyncHandler(async (req, res, next) => {
     businessType: businessType || 'proprietorship',
     status: 'pending',
     productAdminEnabled: false,
+    paymentMethods: paymentResult.paymentMethods,
   });
   user.shop = nursery._id;
   await user.save({ validateBeforeSave: false });
@@ -172,13 +187,41 @@ const myNursery = asyncHandler(async (req, res, next) => {
   const { loadAssignedShop } = require('../middleware/seller');
   const nursery = await loadAssignedShop(req.user);
   if (!nursery) return next(createError(404, 'Nursery application not found.'));
-  res.json({ success: true, nursery, approvalStatus: require('../services/roles').publicShopStatus(nursery.status) });
+  res.json({
+    success: true,
+    nursery,
+    approvalStatus: require('../services/roles').publicShopStatus(nursery.status),
+    paymentSetupSatisfied: paymentSetupSatisfied(nursery),
+  });
+});
+
+const onboardGateway = asyncHandler(async (req, res, next) => {
+  const fields = readGatewayFields(req.body || {}, {});
+  if (fields.error) return next(createError(400, fields.error));
+  const outcome = await completeGatewayOnboarding(fields);
+  res.json({ success: true, ...previewGateway(outcome) });
+});
+
+const updatePaymentMethods = asyncHandler(async (req, res, next) => {
+  const nursery = await Nursery.findOne({ owner: req.user._id }).select('+paymentMethods.gateway.accountCipher');
+  if (!nursery) return next(createError(404, 'Shop not found.'));
+  if (nursery.status === 'suspended') return next(createError(403, 'Suspended shops cannot change payment methods.'));
+  const paymentResult = await resolvePaymentMethods(req.body.paymentMethods || req.body, nursery.paymentMethods);
+  if (paymentResult.error) return next(createError(400, paymentResult.error));
+  nursery.paymentMethods = paymentResult.paymentMethods;
+  nursery.markModified('paymentMethods');
+  await nursery.save();
+  res.json({
+    success: true,
+    paymentMethods: publicPaymentMethods(nursery.paymentMethods),
+    paymentSetupSatisfied: paymentSetupSatisfied(nursery),
+  });
 });
 
 const updateApplication = asyncHandler(async (req, res, next) => {
-  const nursery = await Nursery.findOne({ owner: req.user._id });
+  const nursery = await Nursery.findOne({ owner: req.user._id }).select('+paymentMethods.gateway.accountCipher');
   if (!nursery) return next(createError(404, 'Shop application not found.'));
-  if (!['pending', 'rejected'].includes(nursery.status)) {
+  if (!['pending', 'rejected', 'changes_requested'].includes(nursery.status)) {
     return next(createError(400, 'Approved shop details are edited from the shop profile.'));
   }
   const { description, phone, logo, documents, line1, city, state, postalCode, businessHours } = req.body;
@@ -202,7 +245,22 @@ const updateApplication = asyncHandler(async (req, res, next) => {
       url: String(doc.url).slice(0, 400),
     }));
   }
-  if (nursery.status === 'rejected') {
+  const paymentInput = req.body.paymentMethods || {
+    upi: { enabled: nursery.paymentMethods?.upi?.enabled, upiId: nursery.paymentMethods?.upi?.upiId },
+    qr: { enabled: nursery.paymentMethods?.qr?.enabled, keepExisting: true },
+    gateway: {
+      enabled: nursery.paymentMethods?.gateway?.enabled,
+      accountHolder: nursery.paymentMethods?.gateway?.accountHolder,
+      bankName: nursery.paymentMethods?.gateway?.bankName,
+      ifsc: nursery.paymentMethods?.gateway?.ifsc,
+      keepExistingAccount: true,
+    },
+  };
+  const paymentResult = await resolvePaymentMethods(paymentInput, nursery.paymentMethods);
+  if (paymentResult.error) return next(createError(400, paymentResult.error));
+  nursery.paymentMethods = paymentResult.paymentMethods;
+  nursery.markModified('paymentMethods');
+  if (['rejected', 'changes_requested'].includes(nursery.status)) {
     nursery.status = 'pending';
     nursery.rejectionReason = '';
     nursery.productAdminEnabled = false;
@@ -215,4 +273,7 @@ const updateApplication = asyncHandler(async (req, res, next) => {
   });
 });
 
-module.exports = { listNurseries, getNursery, registerNursery, checkPin, myNursery, updateApplication, publicNursery };
+module.exports = {
+  listNurseries, getNursery, registerNursery, checkPin, myNursery, updateApplication, publicNursery,
+  onboardGateway, updatePaymentMethods,
+};

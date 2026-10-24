@@ -5,7 +5,7 @@ const { requireSeller } = require('../middleware/seller');
 const { upload } = require('../config/cloudinary');
 const seller = require('../controllers/sellerController');
 const { uploadProductImages, deleteProductImage } = require('../controllers/productController');
-const { myNursery, updateApplication } = require('../controllers/nurseryController');
+const { myNursery, updateApplication, updatePaymentMethods } = require('../controllers/nurseryController');
 const { inviteProductAdmin, listStaff } = require('../controllers/productAdminController');
 const { listSellerEnquiries, replyEnquiry } = require('../controllers/enquiryController');
 const { ownedFilter } = require('../services/listingStatus');
@@ -13,6 +13,7 @@ const { ownedFilter } = require('../services/listingStatus');
 router.get('/application', protect, myNursery);
 router.put('/application', protect, updateApplication);
 router.use(protect, requireSeller);
+router.put('/payment-methods', updatePaymentMethods);
 router.get('/staff', listStaff);
 router.post('/staff', inviteProductAdmin);
 

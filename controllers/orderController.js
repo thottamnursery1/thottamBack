@@ -10,6 +10,7 @@ const { calculateOrderPricing, buildSellerGroups, couponDiscountAmount, applyGro
 const { deliveryChoice, canReceiveOrders } = require('../services/communityCommerce');
 const { restoreItemStock, releaseReservedInventory } = require('../services/fulfillment');
 const { packagingFields, withPackagingFee } = require('../services/packaging');
+const { paymentSetupSatisfied } = require('../services/shopPayments');
 
 const validateAndBuildOrder = async (cartItems, couponCode, userId, options = {}) => {
   const errors = [];
@@ -21,7 +22,7 @@ const validateAndBuildOrder = async (cartItems, couponCode, userId, options = {}
   for (const item of cartItems) {
     const product = await Product.findOne({ _id: item.product, isActive: true })
       .populate('category', 'name')
-      .populate('nursery', 'name status shopOpen');
+      .populate('nursery', 'name status shopOpen paymentMethods.upi.enabled paymentMethods.upi.upiId paymentMethods.upi.verificationStatus paymentMethods.qr.enabled paymentMethods.qr.hasImage paymentMethods.qr.mimeType paymentMethods.qr.verificationStatus paymentMethods.gateway.enabled paymentMethods.gateway.verificationStatus paymentMethods.gateway.onboardingStatus');
     if (!product) { errors.push('A product is no longer available.'); continue; }
     if (product.approvalStatus && product.approvalStatus !== 'approved') {
       errors.push(`"${product.name}" is not approved for sale.`);
@@ -31,7 +32,11 @@ const validateAndBuildOrder = async (cartItems, couponCode, userId, options = {}
       errors.push(`"${product.name}" is not available right now.`);
       continue;
     }
-    if (product.nursery && (product.nursery.status !== 'approved' || product.nursery.shopOpen === false)) {
+    if (product.nursery && product.listingSource !== 'community' && (
+      product.nursery.status !== 'approved'
+      || product.nursery.shopOpen === false
+      || !paymentSetupSatisfied(product.nursery)
+    )) {
       errors.push(`"${product.name}" is not available from its nursery right now.`);
       continue;
     }
