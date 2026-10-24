@@ -64,6 +64,7 @@ const userSchema = new mongoose.Schema({
   resetPasswordExpire: Date,
   lastLogin: Date,
   plantExchangeSuspended: { type: Boolean, default: false },
+  razorpayAccountId: { type: String, trim: true, default: '' },
 }, { timestamps: true });
 
 userSchema.pre('save', function syncAccountStatus(next) {

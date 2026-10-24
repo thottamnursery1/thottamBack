@@ -8,6 +8,9 @@ const WebhookEvent = require('../models/WebhookEvent');
 const logger = require('../utils/logger');
 const { verifyWebhookSignature, razorpayEventId } = require('../services/commerce');
 const { commitPaidInventory, recordSettlements, releaseReservedInventory } = require('../services/fulfillment');
+const { settleAuctionPayment, failAuctionPayment } = require('../services/auctionPayment');
+const AuctionPayment = require('../models/AuctionPayment');
+const PlantAuction = require('../models/PlantAuction');
 
 // @desc    Handle Razorpay webhooks
 // @route   POST /api/webhooks/razorpay
@@ -88,6 +91,9 @@ const handleRazorpayWebhook = async (req, res) => {
 };
 
 const handlePaymentCaptured = async (payment) => {
+  const auctionPayment = await settleAuctionPayment(payment);
+  if (auctionPayment) return;
+
   const order = await Order.findOneAndUpdate(
     { razorpayOrderId: payment.order_id, paymentStatus: { $ne: 'paid' } },
     {
@@ -141,6 +147,7 @@ const handlePaymentCaptured = async (payment) => {
 };
 
 const handlePaymentFailed = async (payment) => {
+  await failAuctionPayment(payment);
   const order = await Order.findOne({ razorpayOrderId: payment.order_id, paymentStatus: { $ne: 'paid' } });
   if (order) {
     await releaseReservedInventory(order);
@@ -161,6 +168,15 @@ const handlePaymentFailed = async (payment) => {
 };
 
 const handleRefundProcessed = async (refund, eventType) => {
+  const auctionPayment = await AuctionPayment.findOne({ razorpayPaymentId: refund.payment_id });
+  if (auctionPayment && auctionPayment.status !== 'refunded') {
+    auctionPayment.status = 'refunded';
+    auctionPayment.refundId = refund.id || auctionPayment.refundId;
+    auctionPayment.refundedAt = new Date();
+    await auctionPayment.save();
+    await PlantAuction.updateOne({ _id: auctionPayment.auction }, { status: 'refunded', paymentStatus: 'refunded' });
+  }
+
   const payment = await Payment.findOne({ razorpayPaymentId: refund.payment_id });
   if (!payment) return;
 

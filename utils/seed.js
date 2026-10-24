@@ -425,7 +425,7 @@ const seedDB = async () => {
 
     await User.create({
       name: 'Platform Admin',
-      email: 'admin@rootandbloom.test',
+      email: 'admin@thottam.test',
       password: 'Admin@123',
       role: 'admin',
       isActive: true,
@@ -542,7 +542,7 @@ const seedDB = async () => {
       {
         name: 'Weekend Balcony Kit',
         slug: 'weekend-balcony-kit',
-        description: 'A starter kit with a glazed planter, potting mix, and a hand trowel. Pair it with a plant from any nursery on Root & Bloom.',
+        description: 'A starter kit with a glazed planter, potting mix, and a hand trowel. Pair it with a plant from any nursery on Thottam.',
         shortDescription: 'Planter, mix, and trowel for a first balcony.',
         category: kits._id,
         price: 899,
@@ -626,7 +626,7 @@ const seedDB = async () => {
     await PlatformSettings.create({
       key: 'platform',
       announcement: 'Demo catalog — free delivery above ₹999. Live payouts are tracked manually.',
-      supportEmail: 'hello@rootandbloom.test',
+      supportEmail: 'hello@thottam.test',
       supportPhone: '1800-200-3344',
       demoMode: true,
       serviceablePins: ['560001', '560038', '411001', '411004', '400001', '110001'],
@@ -635,7 +635,7 @@ const seedDB = async () => {
 
     console.log(`Created ${catalog.length} demo products across approved nurseries`);
     console.log('\nSeed complete. These accounts are demo data.');
-    console.log('Admin: admin@rootandbloom.test / Admin@123');
+    console.log('Admin: admin@thottam.test / Admin@123');
     console.log('Customer: customer@test.com / Customer@123');
     console.log('Approved seller: seller@verdant.test / Seller@123');
     console.log('Second seller: seller@canopy.test / Seller@123');

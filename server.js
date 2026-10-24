@@ -29,6 +29,7 @@ const enquiryRoutes = require('./routes/enquiryRoutes');
 const productAdminRoutes = require('./routes/productAdminRoutes');
 const communityRoutes = require('./routes/communityRoutes');
 const plantRoutes = require('./routes/plantRoutes');
+const auctionRoutes = require('./routes/auctionRoutes');
 
 // Ensure logs directory exists
 if (!fs.existsSync('logs')) fs.mkdirSync('logs');
@@ -79,10 +80,11 @@ app.use('/api/product-admin', productAdminRoutes);
 app.use('/api/enquiries', enquiryRoutes);
 app.use('/api/community', communityRoutes);
 app.use('/api/plants', plantRoutes);
+app.use('/api/auctions', auctionRoutes);
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
-  res.json({ success: true, message: 'Root & Bloom API is running', timestamp: new Date().toISOString() });
+  res.json({ success: true, message: 'Thottam API is running', timestamp: new Date().toISOString() });
 });
 
 // ─── 404 Handler ──────────────────────────────────────────────────────────────
@@ -99,14 +101,14 @@ const server = app.listen(PORT, () => {
   logger.info(`Server running in ${process.env.NODE_ENV} mode on port ${PORT}`);
   if (process.env.NODE_ENV !== 'production') {
   console.log('\n╔════════════════════════════════════════════════════════════════╗');
-  console.log('║         Root & Bloom — Marketplace API                      ║');
+  console.log('║         Thottam — Marketplace API                            ║');
   console.log('╠════════════════════════════════════════════════════════════════╣');
   console.log(`║  Server:    http://localhost:${PORT}                           ║`);
   console.log(`║  API:       http://localhost:${PORT}/api                       ║`);
   console.log(`║  Health:    http://localhost:${PORT}/api/health                ║`);
   console.log('╠════════════════════════════════════════════════════════════════╣');
   console.log('║  🔐 ADMIN CREDENTIALS (for testing)                         ║');
-  console.log('║  Email:     admin@rootandbloom.test                         ║');
+  console.log('║  Email:     admin@thottam.test                               ║');
   console.log('║  Password:  Admin@123                                        ║');
   console.log('╠════════════════════════════════════════════════════════════════╣');
   console.log('║  👤 TEST CUSTOMER                                            ║');

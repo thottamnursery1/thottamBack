@@ -104,7 +104,7 @@ const forgotPassword = asyncHandler(async (req, res, next) => {
   try {
     await sendEmail({
       to: user.email,
-      subject: 'Green Roots Nursery – Password Reset',
+      subject: 'Thottam – Password Reset',
       html: `
         <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
           <h2 style="color: #28623D;">Password Reset Request</h2>
@@ -112,7 +112,7 @@ const forgotPassword = asyncHandler(async (req, res, next) => {
           <p>You requested a password reset. Click the button below to set a new password. This link is valid for 30 minutes.</p>
           <a href="${resetUrl}" style="display:inline-block;padding:12px 24px;background:#28623D;color:#fff;border-radius:6px;text-decoration:none;margin:16px 0;">Reset Password</a>
           <p>If you didn't request this, please ignore this email.</p>
-          <p>— Green Roots Nursery Team</p>
+          <p>— Thottam Team</p>
         </div>
       `,
     });

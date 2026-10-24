@@ -24,11 +24,11 @@ const platformSettingsSchema = new mongoose.Schema({
     type: String,
     default: 'Free delivery on orders above ₹999. Plants are packed by the nursery that grows them.',
   },
-  supportEmail: { type: String, default: 'hello@rootandbloom.test' },
+  supportEmail: { type: String, default: 'hello@thottam.test' },
   supportPhone: { type: String, default: '1800-200-3344' },
   returnPolicy: {
     type: String,
-    default: 'Healthy plants can be reported within 48 hours of delivery with photos. Refunds are reviewed by Root & Bloom and issued through Razorpay when a captured payment exists.',
+    default: 'Healthy plants can be reported within 48 hours of delivery with photos. Refunds are reviewed by Thottam and issued through Razorpay when a captured payment exists.',
   },
   cancellationPolicy: {
     type: String,
